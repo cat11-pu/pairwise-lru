@@ -119,11 +119,11 @@ class LRUCache:
         entry = self._entries.get(key)
         if entry is not None and not self._is_expired(entry, now):
             self._hits += 1
+            self._touch(key)
             return entry.value
-        if entry is None:
-            self._misses += 1
-            return None
-        self._reclaim(key)
+        self._misses += 1
+        if entry is not None:
+            self._reclaim(key)
         return None
 
     def peek(self, key):
@@ -132,7 +132,6 @@ class LRUCache:
         entry = self._entries.get(key)
         if entry is None or self._is_expired(entry, self.clock.now()):
             return None
-        self._touch(key)
         return entry.value
 
     # ------------------------------------------------------------ 写路径
@@ -149,6 +148,7 @@ class LRUCache:
             self._entries[key] = _Entry(key, value, self._deadline(ttl, now))
         else:
             entry.value = value
+            entry.expires_at = self._deadline(ttl, now)
         self._touch(key)
         return value
 
@@ -157,9 +157,9 @@ class LRUCache:
 
         批次里每一项是 (key, value) 或者 (key, value, ttl)。
         """
+        checked = [self._check_item(item) for item in items]
         written = []
-        for item in items:
-            key, value, ttl = self._check_item(item)
+        for key, value, ttl in checked:
             self.put(key, value, ttl)
             written.append(key)
         return written
@@ -252,7 +252,7 @@ class LRUCache:
 
     def _is_expired(self, entry, now):
         """条目在给定的刻度上是不是已经过期。"""
-        return entry.expires_at is not None and now > entry.expires_at
+        return entry.expires_at is not None and now >= entry.expires_at
 
     def _touch(self, key):
         """把键提升到最近使用的位置。"""
@@ -271,17 +271,23 @@ class LRUCache:
 
     def _occupied(self):
         """当前占用容量的条目数。"""
-        return len(self._entries)
+        now = self.clock.now()
+        return sum(1 for entry in self._entries.values() if not self._is_expired(entry, now))
 
     def _make_room(self):
         """容量不够就淘汰条目，直到占位数量腾出一个空位。"""
+        now = self.clock.now()
+        for key in reversed(self._order):
+            entry = self._entries.get(key)
+            if entry is not None and self._is_expired(entry, now):
+                self._reclaim(key)
         while self._occupied() >= self.capacity:
             self._evict_one()
 
     def _evict_one(self):
         """淘汰一条条目，返回被淘汰的键。"""
-        victim = self._order[0]
+        victim = self._order[-1]
         self._entries.pop(victim, None)
-        self._order.pop(0)
+        self._order.pop()
         self._evicted.append(victim)
         return victim
